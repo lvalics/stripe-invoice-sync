@@ -1,0 +1,33 @@
+# Core dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# Stripe
+stripe==7.8.0
+
+# HTTP clients
+httpx==0.25.2
+aiofiles==23.2.1
+
+# XML processing
+lxml==4.9.3
+
+# Database (optional)
+sqlalchemy==2.0.23
+alembic==1.13.0
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+
+# Development
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.11.0
+flake8==6.1.0
+
+# Logging
+rich==13.7.0
