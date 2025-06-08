@@ -154,12 +154,16 @@ class StripeService:
         supplier_info: Dict[str, Any]
     ) -> InvoiceData:
         """Convert Stripe invoice to standardized format"""
+        
         customer = stripe_invoice.get("customer", {})
         
         # Extract customer tax ID
         customer_tax_id = None
         if isinstance(customer, dict):
-            tax_ids = customer.get("tax_ids", {}).get("data", [])
+            tax_ids_obj = customer.get("tax_ids", {})
+            if tax_ids_obj is None:
+                tax_ids_obj = {}
+            tax_ids = tax_ids_obj.get("data", [])
             if tax_ids:
                 customer_tax_id = tax_ids[0].get("value")
         
@@ -178,7 +182,10 @@ class StripeService:
         
         # Process invoice lines
         lines = []
-        for line_item in stripe_invoice.get("lines", {}).get("data", []):
+        lines_data = stripe_invoice.get("lines", {})
+        if lines_data is None:
+            lines_data = {}
+        for line_item in lines_data.get("data", []):
             lines.append({
                 "description": line_item.get("description", ""),
                 "quantity": line_item.get("quantity", 1),
@@ -222,11 +229,11 @@ class StripeService:
             source_id=stripe_invoice["id"],
             source_data=stripe_invoice,
             customer_id=customer.get("id", "") if isinstance(customer, dict) else str(customer),
-            customer_name=customer.get("name", "") if isinstance(customer, dict) else "",
-            customer_email=customer.get("email", "") if isinstance(customer, dict) else "",
+            customer_name=(customer.get("name") or "") if isinstance(customer, dict) else "",
+            customer_email=(customer.get("email") or "") if isinstance(customer, dict) else "",
             customer_tax_id=customer_tax_id,
             customer_address=customer_address,
-            customer_country=customer.get("address", {}).get("country", "RO") if isinstance(customer, dict) else "RO",
+            customer_country=(customer.get("address", {}) or {}).get("country", "RO") if isinstance(customer, dict) else "RO",
             supplier_name=supplier_info["name"],
             supplier_tax_id=supplier_info["tax_id"],
             supplier_address=supplier_info["address"],
@@ -257,10 +264,13 @@ class StripeService:
         
         # Try to get from customer object
         if isinstance(customer, dict):
-            customer_name = customer.get("name", "")
-            customer_email = customer.get("email", "")
+            customer_name = customer.get("name") or ""
+            customer_email = customer.get("email") or ""
             
-            tax_ids = customer.get("tax_ids", {}).get("data", [])
+            tax_ids_obj = customer.get("tax_ids", {})
+            if tax_ids_obj is None:
+                tax_ids_obj = {}
+            tax_ids = tax_ids_obj.get("data", [])
             if tax_ids:
                 customer_tax_id = tax_ids[0].get("value")
                 

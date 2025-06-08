@@ -44,7 +44,7 @@ async def process_invoice(request: Request, invoice_request: ProcessInvoiceReque
     try:
         stripe_service = request.app.state.stripe_service
         providers = request.app.state.providers
-        
+
         # Validate provider
         if invoice_request.provider not in providers:
             raise HTTPException(
@@ -57,12 +57,23 @@ async def process_invoice(request: Request, invoice_request: ProcessInvoiceReque
         # Fetch source data from Stripe
         if invoice_request.source_type == "stripe_invoice":
             stripe_data = await stripe_service.get_invoice_by_id(invoice_request.source_id)
+            if not stripe_data:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Stripe invoice not found: {invoice_request.source_id}"
+                )
+            supplier_info = settings.get_supplier_info()
             invoice_data = stripe_service.convert_invoice_to_standard_format(
                 stripe_data,
-                settings.get_supplier_info()
+                supplier_info
             )
         elif invoice_request.source_type == "stripe_charge":
             stripe_data = await stripe_service.get_charge_by_id(invoice_request.source_id)
+            if not stripe_data:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Stripe charge not found: {invoice_request.source_id}"
+                )
             invoice_data = stripe_service.convert_charge_to_standard_format(
                 stripe_data,
                 settings.get_supplier_info()
@@ -97,6 +108,9 @@ async def process_invoice(request: Request, invoice_request: ProcessInvoiceReque
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        print(f"Error in process_invoice: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 
