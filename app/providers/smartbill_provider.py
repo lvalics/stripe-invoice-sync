@@ -33,7 +33,7 @@ class SmartBillProvider(InvoiceProviderInterface):
         auth_string = f"{self.username}:{self.token}"
         self.auth_header = f"Basic {base64.b64encode(auth_string.encode()).decode()}"
         
-    async def validate_credentials(self) -> bool:
+    async def validate_credentials(self) -> Dict[str, Any]:
         """Validate SmartBill credentials"""
         try:
             async with httpx.AsyncClient() as client:
@@ -46,11 +46,23 @@ class SmartBillProvider(InvoiceProviderInterface):
                     params={"cif": self.company_cif}
                 )
                 
-                return response.status_code == 200
+                if response.status_code == 200:
+                    return {
+                        "valid": True,
+                        "message": "SmartBill credentials validated successfully"
+                    }
+                else:
+                    return {
+                        "valid": False,
+                        "message": f"Authentication failed with status {response.status_code}"
+                    }
                 
         except Exception as e:
             logger.error(f"SmartBill credential validation failed: {str(e)}")
-            return False
+            return {
+                "valid": False,
+                "message": f"Connection error: {str(e)}"
+            }
     
     async def create_invoice(self, invoice_data: InvoiceData) -> ProviderResponse:
         """Create invoice in SmartBill system"""

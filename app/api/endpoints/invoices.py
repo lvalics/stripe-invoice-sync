@@ -217,21 +217,43 @@ async def download_invoice(
             )
         
         provider_instance = providers[provider]
-        content = await provider_instance.download_invoice(invoice_id, format)
         
-        if not content:
-            raise HTTPException(status_code=404, detail="Invoice not found")
+        # First validate credentials to ensure we can connect
+        try:
+            validation_result = await provider_instance.validate_credentials()
+            if not validation_result.get("valid", False):
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Provider authentication failed: {validation_result.get('message', 'Invalid credentials')}"
+                )
+        except Exception as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Provider connection error: {str(e)}"
+            )
         
-        # Return file response
-        from fastapi.responses import Response
-        media_type = "application/pdf" if format == "pdf" else "application/xml"
-        return Response(
-            content=content,
-            media_type=media_type,
-            headers={
-                "Content-Disposition": f"attachment; filename=invoice_{invoice_id}.{format}"
-            }
-        )
+        # Now try to download the invoice
+        try:
+            content = await provider_instance.download_invoice(invoice_id, format)
+            
+            if not content:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+            
+            # Return file response
+            from fastapi.responses import Response
+            media_type = "application/pdf" if format == "pdf" else "application/xml"
+            return Response(
+                content=content,
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f"attachment; filename=invoice_{invoice_id}.{format}"
+                }
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invoice download failed: {str(e)}"
+            )
         
     except HTTPException:
         raise

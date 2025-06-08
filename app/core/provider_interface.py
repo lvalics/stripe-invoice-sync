@@ -94,7 +94,7 @@ class InvoiceProviderInterface(ABC):
         self.name = config.name
         
     @abstractmethod
-    async def validate_credentials(self) -> bool:
+    async def validate_credentials(self) -> Dict[str, Any]:
         """Validate provider credentials"""
         pass
     

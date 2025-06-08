@@ -9,6 +9,11 @@ import xml.etree.ElementTree as ET
 from lxml import etree
 import base64
 import json
+import warnings
+import urllib3
+
+# Suppress SSL warnings temporarily
+warnings.filterwarnings('ignore', category=urllib3.exceptions.InsecureRequestWarning)
 
 from app.core.provider_interface import (
     InvoiceProviderInterface,
@@ -39,14 +44,20 @@ class ANAFProvider(InvoiceProviderInterface):
         self.access_token = None
         self.token_expires = None
         
-    async def validate_credentials(self) -> bool:
+    async def validate_credentials(self) -> Dict[str, Any]:
         """Validate ANAF OAuth2 credentials"""
         try:
             await self._ensure_authenticated()
-            return True
+            return {
+                "valid": True,
+                "message": "ANAF credentials validated successfully"
+            }
         except Exception as e:
             logger.error(f"ANAF credential validation failed: {str(e)}")
-            return False
+            return {
+                "valid": False,
+                "message": f"Authentication failed: {str(e)}"
+            }
     
     async def create_invoice(self, invoice_data: InvoiceData) -> ProviderResponse:
         """Create invoice in ANAF e-Factura system"""
@@ -160,9 +171,13 @@ class ANAFProvider(InvoiceProviderInterface):
             
             return None
             
+        except httpx.HTTPError as e:
+            logger.error(f"ANAF HTTP error during download: {str(e)}")
+            raise Exception(f"Connection error: {str(e)}")
         except Exception as e:
             logger.error(f"Failed to download ANAF invoice: {str(e)}")
-            return None
+            # Re-raise to let endpoint handle it
+            raise
     
     async def cancel_invoice(self, invoice_id: str) -> ProviderResponse:
         """Cancel an invoice (not directly supported by ANAF)"""
@@ -175,41 +190,116 @@ class ANAFProvider(InvoiceProviderInterface):
     
     async def get_company_info(self, tax_id: str) -> Optional[Dict[str, Any]]:
         """Get company information from ANAF"""
+        # Remove RO prefix if present
+        cui = tax_id.replace("RO", "").strip()
+        logger.info(f"Looking up CUI: {cui}")
+        
         try:
-            # Remove RO prefix if present
-            cui = tax_id.replace("RO", "").strip()
             
-            async with httpx.AsyncClient() as client:
+            # Create a fresh client for each request to avoid connection reuse issues
+            limits = httpx.Limits(
+                max_keepalive_connections=0,  # Disable connection pooling
+                max_connections=1,
+                keepalive_expiry=0
+            )
+            async with httpx.AsyncClient(
+                verify=False, 
+                limits=limits,
+                follow_redirects=True,
+                http2=False,  # Disable HTTP/2 which can cause issues
+                default_encoding='utf-8'
+            ) as client:
                 response = await client.post(
-                    f"https://webservicesp.anaf.ro/PlatitorTvaRest/api/v8/ws/tva",
+                    f"https://webservicesp.anaf.ro/api/PlatitorTvaRest/v9/tva",
                     json=[{
                         "cui": int(cui),
                         "data": datetime.now().strftime("%Y-%m-%d")
                     }],
-                    headers={"Content-Type": "application/json"}
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Connection": "close",  # Force connection close
+                        "Accept-Encoding": "gzip, deflate"  # Explicit encoding
+                    },
+                    timeout=httpx.Timeout(30.0, connect=10.0, read=20.0)
                 )
+                logger.info(f"ANAF response status: {response.status_code}")
                 
                 if response.status_code == 200:
-                    data = response.json()
+                    try:
+                        # Read content once and parse
+                        content = await response.aread()
+                        data = json.loads(content)
+                        logger.info(f"ANAF response data keys: {list(data.keys()) if data else 'None'}")
+                    except Exception as json_err:
+                        logger.error(f"Failed to parse ANAF JSON response: {json_err}")
+                        raise Exception(f"Invalid JSON response from ANAF: {str(json_err)}")
+                    finally:
+                        # Explicitly close the response
+                        await response.aclose()
+                    
+                    # v9 API may or may not have wrapper structure
+                    if "cod" in data and "message" in data:
+                        if data.get("cod") != 200:
+                            raise Exception(f"ANAF API error: {data.get('message', 'Unknown error')}")
+                        logger.info(f"ANAF v9 response with wrapper: cod={data.get('cod')}, message={data.get('message')}")
+                    
                     if data.get("found") and len(data.get("found", [])) > 0:
                         company = data["found"][0]
-                        return {
-                            "cui": company.get("cui"),
-                            "name": company.get("denumire"),
-                            "address": company.get("adresa"),
-                            "registration_number": company.get("nrRegCom"),
-                            "phone": company.get("telefon"),
-                            "vat_payer": company.get("scpTVA"),
-                            "vat_registration_date": company.get("data_inceput_ScpTVA"),
-                            "status": company.get("statusInactivi"),
-                            "raw_data": company
+                        logger.info(f"Found company data keys: {list(company.keys())}")
+                        
+                        # v9 API has nested structure
+                        general_data = company.get("date_generale", {})
+                        vat_data = company.get("inregistrare_scop_Tva", {})
+                        inactive_data = company.get("stare_inactiv", {})
+                        
+                        logger.info(f"Extracted general_data: {general_data.get('denumire')}")
+                        
+                        # Extract VAT registration date from periods
+                        vat_reg_date = None
+                        if vat_data.get("perioade_TVA"):
+                            vat_reg_date = vat_data["perioade_TVA"][0].get("data_inceput_ScpTVA")
+                        
+                        result = {
+                            "cui": str(general_data.get("cui")),  # Convert int to string
+                            "name": general_data.get("denumire"),
+                            "address": general_data.get("adresa"),
+                            "registration_number": general_data.get("nrRegCom"),
+                            "phone": general_data.get("telefon"),
+                            "vat_payer": vat_data.get("scpTVA", False),
+                            "vat_registration_date": vat_reg_date,
+                            "status": "ACTIV" if not inactive_data.get("statusInactivi", False) else "INACTIV"  # Convert bool to string
+                            # Removed raw_data to avoid potential serialization issues
                         }
+                        logger.info(f"Returning company info for CUI {cui}")
+                        return result
+                elif response.status_code >= 500:
+                    raise Exception(f"ANAF service error: HTTP {response.status_code}")
+                elif response.status_code >= 400:
+                    logger.warning(f"ANAF API returned {response.status_code} for CUI {cui}")
             
             return None
             
+        except httpx.ReadError as e:
+            logger.error(f"ANAF read error: {str(e)}")
+            raise Exception(f"Error reading ANAF response: {str(e)}")
+        except httpx.ConnectError as e:
+            logger.error(f"ANAF connection error: {str(e)}")
+            raise Exception(f"Cannot connect to ANAF service: {str(e)}")
+        except httpx.TimeoutException as e:
+            logger.error(f"ANAF timeout error: {str(e)}")
+            raise Exception(f"ANAF service timeout: {str(e)}")
+        except httpx.HTTPError as e:
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"ANAF HTTP error: {error_msg}")
+            raise Exception(f"ANAF HTTP error: {error_msg}")
+        except ValueError as e:
+            logger.error(f"Invalid CUI format: {str(e)}")
+            raise Exception(f"Invalid CUI format: {str(e)}")
         except Exception as e:
-            logger.error(f"Failed to get company info from ANAF: {str(e)}")
-            return None
+            logger.error(f"Failed to get company info from ANAF: {type(e).__name__}: {str(e)}")
+            raise
     
     def validate_invoice_data(self, invoice_data: InvoiceData) -> List[str]:
         """Validate invoice data for ANAF requirements"""

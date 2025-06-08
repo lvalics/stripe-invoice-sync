@@ -5,4 +5,4 @@ __pycache__/*
 *.pyo
 *.pyd
 processed_payments.json
-uvicorn.log
+*.log

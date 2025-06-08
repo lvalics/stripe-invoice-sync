@@ -23,6 +23,10 @@ class CompanyInfo(BaseModel):
 @router.get("/company/{cui}", response_model=CompanyInfo)
 async def get_company_info(request: Request, cui: str):
     """Get company information from ANAF by CUI/Tax ID"""
+    # import logging
+    # logger = logging.getLogger(__name__)
+    # logger.info(f"Received request for CUI: {cui}")
+    
     providers = request.app.state.providers
     
     # Try to find a provider that supports company lookup
@@ -37,6 +41,7 @@ async def get_company_info(request: Request, cui: str):
         company_data = await anaf_provider.get_company_info(cui)
         
         if not company_data:
+            # logger.info(f"No data found for CUI: {cui}")
             raise HTTPException(
                 status_code=404,
                 detail=f"Company with CUI {cui} not found"
@@ -56,10 +61,23 @@ async def get_company_info(request: Request, cui: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch company info: {str(e)}"
-        )
+        # Check if it's a connection error
+        error_msg = str(e).lower()
+        if "connection" in error_msg or "timeout" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail=f"ANAF service connection error: {str(e)}"
+            )
+        elif "invalid cui" in error_msg:
+            raise HTTPException(
+                status_code=400,
+                detail=str(e)
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch company info: {str(e)}"
+            )
 
 
 @router.post("/validate-cui")
