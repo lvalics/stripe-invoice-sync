@@ -119,3 +119,40 @@ The `scripts/` directory contains standalone automation tools:
 - `sync_customers.py` - Manage customer tax ID mappings
 
 These scripts use the API internally but provide CLI interfaces for cron jobs and automation.
+
+## API Documentation
+
+### Postman Collection
+
+A Postman collection is maintained at `postman_collection.json` for easy API testing and documentation. 
+
+**To use the collection:**
+1. Import `postman_collection.json` into Postman
+2. Set the `baseUrl` variable (default: `http://localhost:8000`)
+3. Set the `provider` variable (default: `anaf`)
+
+**When adding new endpoints:**
+1. Add the endpoint to the appropriate folder in the collection
+2. Include all required/optional parameters with descriptions
+3. Add example request bodies for POST endpoints
+4. Update the collection version if making significant changes
+
+**To regenerate the collection from code:**
+```bash
+# The collection structure mirrors the API organization:
+# - Root & Health: System status endpoints
+# - Stripe API: Stripe data fetching endpoints
+# - Invoice Processing: Core invoice processing endpoints
+# - Provider Management: Provider configuration/validation
+# - ANAF Specific: ANAF-specific functionality
+# - Documentation: Auto-generated API docs
+```
+
+### Interactive Documentation
+
+The API provides auto-generated interactive documentation:
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+- **OpenAPI Schema**: `http://localhost:8000/openapi.json`
+
+These are automatically updated when endpoints are added/modified.

@@ -1,0 +1,396 @@
+{
+  "info": {
+    "name": "Stripe Invoice Sync API",
+    "description": "Collection for Stripe Invoice Sync system - syncs Stripe invoices/charges with Romanian invoice providers",
+    "version": "1.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "anaf",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Root & Health",
+      "item": [
+        {
+          "name": "Root",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": ["{{baseUrl}}"],
+              "path": [""]
+            }
+          }
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Stripe API",
+      "item": [
+        {
+          "name": "Test Stripe Connection",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/stripe/test",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "stripe", "test"]
+            }
+          }
+        },
+        {
+          "name": "Get Invoices",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/stripe/invoices?start_date=2025-01-01&end_date=2025-01-08&status=paid&limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "stripe", "invoices"],
+              "query": [
+                {
+                  "key": "start_date",
+                  "value": "2025-01-01",
+                  "description": "Start date (YYYY-MM-DD)"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2025-01-08",
+                  "description": "End date (YYYY-MM-DD)"
+                },
+                {
+                  "key": "status",
+                  "value": "paid",
+                  "description": "Invoice status (default: paid)"
+                },
+                {
+                  "key": "customer_id",
+                  "value": "",
+                  "description": "Filter by customer ID (optional)",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "100",
+                  "description": "Maximum number of invoices"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Charges",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/stripe/charges?start_date=2025-01-01&end_date=2025-01-08&status=succeeded&limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "stripe", "charges"],
+              "query": [
+                {
+                  "key": "start_date",
+                  "value": "2025-01-01",
+                  "description": "Start date (YYYY-MM-DD)"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2025-01-08",
+                  "description": "End date (YYYY-MM-DD)"
+                },
+                {
+                  "key": "status",
+                  "value": "succeeded",
+                  "description": "Charge status (default: succeeded)"
+                },
+                {
+                  "key": "customer_id",
+                  "value": "",
+                  "description": "Filter by customer ID (optional)",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "100",
+                  "description": "Maximum number of charges"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Invoice Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/stripe/invoice/in_1234567890",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "stripe", "invoice", "in_1234567890"]
+            }
+          }
+        },
+        {
+          "name": "Get Charge Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/stripe/charge/ch_1234567890",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "stripe", "charge", "ch_1234567890"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Invoice Processing",
+      "item": [
+        {
+          "name": "Process Single Invoice",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_type\": \"stripe_invoice\",\n  \"source_id\": \"in_1234567890\",\n  \"provider\": \"{{provider}}\",\n  \"customer_tax_id\": \"RO12345678\",\n  \"invoice_number\": \"INV-2025-001\",\n  \"metadata\": {\n    \"custom_field\": \"value\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/invoices/process",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "invoices", "process"]
+            }
+          }
+        },
+        {
+          "name": "Process Single Charge",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_type\": \"stripe_charge\",\n  \"source_id\": \"ch_1234567890\",\n  \"provider\": \"{{provider}}\",\n  \"customer_tax_id\": \"RO12345678\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/invoices/process",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "invoices", "process"]
+            }
+          }
+        },
+        {
+          "name": "Process Batch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoices\": [\n    {\n      \"source_type\": \"stripe_invoice\",\n      \"source_id\": \"in_1234567890\",\n      \"provider\": \"{{provider}}\",\n      \"customer_tax_id\": \"RO12345678\"\n    },\n    {\n      \"source_type\": \"stripe_charge\",\n      \"source_id\": \"ch_0987654321\",\n      \"provider\": \"{{provider}}\",\n      \"customer_tax_id\": \"RO87654321\"\n    }\n  ],\n  \"provider\": \"{{provider}}\",\n  \"async_processing\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/invoices/process/batch",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "invoices", "process", "batch"]
+            }
+          }
+        },
+        {
+          "name": "Get Invoice Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/invoices/status/in_1234567890?provider={{provider}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "invoices", "status", "in_1234567890"],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}",
+                  "description": "Provider name (required)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Download Invoice",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/invoices/download/inv_1234567890?provider={{provider}}&format=pdf",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "invoices", "download", "inv_1234567890"],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{provider}}",
+                  "description": "Provider name (required)"
+                },
+                {
+                  "key": "format",
+                  "value": "pdf",
+                  "description": "Download format (pdf/xml)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Provider Management",
+      "item": [
+        {
+          "name": "List Providers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "providers", ""]
+            }
+          }
+        },
+        {
+          "name": "Validate Provider",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{provider}}/validate",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "providers", "{{provider}}", "validate"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ANAF Specific",
+      "item": [
+        {
+          "name": "Get Company Info",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/anaf/company/12345678",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "anaf", "company", "12345678"]
+            }
+          }
+        },
+        {
+          "name": "Validate CUI",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cui\": \"RO12345678\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/anaf/validate-cui",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "anaf", "validate-cui"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Documentation",
+      "item": [
+        {
+          "name": "Swagger UI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/docs",
+              "host": ["{{baseUrl}}"],
+              "path": ["docs"]
+            },
+            "description": "Open in browser for interactive documentation"
+          }
+        },
+        {
+          "name": "ReDoc",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/redoc",
+              "host": ["{{baseUrl}}"],
+              "path": ["redoc"]
+            },
+            "description": "Alternative documentation UI"
+          }
+        },
+        {
+          "name": "OpenAPI Schema",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": ["{{baseUrl}}"],
+              "path": ["openapi.json"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

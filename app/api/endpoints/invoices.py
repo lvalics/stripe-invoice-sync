@@ -87,6 +87,11 @@ async def process_invoice(request: Request, invoice_request: ProcessInvoiceReque
         # Override with provided data
         if invoice_request.customer_tax_id:
             invoice_data.customer_tax_id = invoice_request.customer_tax_id
+        elif not invoice_data.customer_tax_id:
+            # For B2C (individuals without tax ID), use "-" as placeholder
+            # This is a legal requirement in Romania - systems need a tax ID field
+            # but individuals don't have business tax IDs
+            invoice_data.customer_tax_id = "-"
         if invoice_request.invoice_number:
             invoice_data.invoice_number = invoice_request.invoice_number
         if invoice_request.metadata:
@@ -257,6 +262,19 @@ async def _process_batch_async(app_state, batch_request: BatchProcessRequest):
                     stripe_data,
                     settings.get_supplier_info()
                 )
+            
+            # Override with provided data
+            if invoice_req.customer_tax_id:
+                invoice_data.customer_tax_id = invoice_req.customer_tax_id
+            elif not invoice_data.customer_tax_id:
+                # For B2C (individuals without tax ID), use "-" as placeholder
+                # This is a legal requirement in Romania - systems need a tax ID field
+                # but individuals don't have business tax IDs
+                invoice_data.customer_tax_id = "-"
+            if invoice_req.invoice_number:
+                invoice_data.invoice_number = invoice_req.invoice_number
+            if invoice_req.metadata:
+                invoice_data.metadata.update(invoice_req.metadata)
             
             # Process
             await provider.create_invoice(invoice_data)
