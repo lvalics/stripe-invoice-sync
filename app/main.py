@@ -12,6 +12,7 @@ from app.core.provider_factory import ProviderFactory
 from app.core.provider_interface import ProviderConfig
 from app.api.endpoints import stripe_router, anaf_router, invoice_router, provider_router
 from app.services.stripe_service import StripeService, StripeConfig
+from app.db.database import init_db
 
 
 # Configure logging
@@ -32,6 +33,14 @@ async def lifespan(app: FastAPI):
     """Application lifespan events"""
     # Startup
     logger.info("Starting up Stripe Invoice Sync API")
+    
+    # Initialize database
+    try:
+        init_db()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        raise
     
     # Initialize Stripe service
     global stripe_service
@@ -99,10 +108,30 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    from app.db.database import engine
+    from sqlalchemy import text
+    
     health_status = {
         "status": "healthy",
-        "providers": {}
+        "providers": {},
+        "database": {}
     }
+    
+    # Check database status
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT 1"))
+            result.fetchone()
+        health_status["database"] = {
+            "status": "connected",
+            "type": "sqlite" if settings.database_url.startswith("sqlite") else "postgresql"
+        }
+    except Exception as e:
+        health_status["database"] = {
+            "status": "error",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
     
     # Check provider status
     for name, provider in providers.items():

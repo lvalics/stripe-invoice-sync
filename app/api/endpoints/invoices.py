@@ -1,13 +1,17 @@
 """
 Invoice processing API endpoints
 """
-from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Request, BackgroundTasks, Depends
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from datetime import datetime
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.provider_interface import InvoiceData, ProviderResponse
+from app.db.database import get_db
+from app.db.services import invoice_processing_service
+from app.db.models import InvoiceType as DBInvoiceType
 
 
 router = APIRouter()
@@ -39,7 +43,11 @@ class ProcessingStatus(BaseModel):
 
 
 @router.post("/process", response_model=ProcessingStatus)
-async def process_invoice(request: Request, invoice_request: ProcessInvoiceRequest):
+async def process_invoice(
+    request: Request,
+    invoice_request: ProcessInvoiceRequest,
+    db: Session = Depends(get_db)
+):
     """Process a single Stripe invoice/charge through the specified provider"""
     try:
         stripe_service = request.app.state.stripe_service
@@ -97,8 +105,35 @@ async def process_invoice(request: Request, invoice_request: ProcessInvoiceReque
         if invoice_request.metadata:
             invoice_data.metadata.update(invoice_request.metadata)
         
+        # Check for duplicate and create database record
+        invoice_type = DBInvoiceType.STRIPE_INVOICE if invoice_request.source_type == "stripe_invoice" else DBInvoiceType.STRIPE_CHARGE
+        db_invoice, is_duplicate = invoice_processing_service.process_invoice_with_duplicate_check(
+            invoice_data=invoice_data,
+            provider=invoice_request.provider,
+            invoice_type=invoice_type
+        )
+        
+        if is_duplicate:
+            # Return existing status if already processed
+            return ProcessingStatus(
+                source_id=invoice_request.source_id,
+                provider=invoice_request.provider,
+                status=db_invoice.status,
+                message=f"Invoice already processed with status: {db_invoice.status}",
+                external_id=db_invoice.provider_invoice_id,
+                errors=[],
+                timestamp=db_invoice.processed_at or db_invoice.created_at
+            )
+        
         # Process through provider
         result = await provider.create_invoice(invoice_data)
+        
+        # Update database with result
+        updated_invoice = invoice_processing_service.update_invoice_status_with_history(
+            invoice_id=db_invoice.id,
+            provider_response=result,
+            action="create_invoice"
+        )
         
         return ProcessingStatus(
             source_id=invoice_request.source_id,
@@ -123,7 +158,8 @@ async def process_invoice(request: Request, invoice_request: ProcessInvoiceReque
 async def process_batch(
     request: Request,
     batch_request: BatchProcessRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
 ):
     """Process multiple invoices through the specified provider"""
     try:
@@ -158,7 +194,9 @@ async def process_batch(
             results = []
             for invoice_req in batch_request.invoices:
                 invoice_req.provider = batch_request.provider
-                result = await process_invoice(request, invoice_req)
+                # Create a new request with db dependency
+                from fastapi import Depends
+                result = await process_invoice(request, invoice_req, db)
                 results.append(result)
             return results
             
@@ -259,6 +297,53 @@ async def download_invoice(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+@router.get("/history/{stripe_id}")
+async def get_invoice_history(
+    stripe_id: str,
+    provider: Optional[str] = None
+):
+    """Get complete processing history for a Stripe invoice/charge"""
+    try:
+        history = invoice_processing_service.get_invoice_full_history(stripe_id, provider)
+        if "error" in history:
+            raise HTTPException(status_code=404, detail=history["error"])
+        return history
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get history: {str(e)}")
+
+
+@router.get("/statistics")
+async def get_processing_statistics(
+    provider: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+):
+    """Get processing statistics"""
+    try:
+        stats = invoice_processing_service.get_processing_stats(
+            provider=provider,
+            start_date=start_date,
+            end_date=end_date
+        )
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
+
+
+@router.post("/retry-queue/process")
+async def process_retry_queue(
+    provider: Optional[str] = None
+):
+    """Process invoices in the retry queue"""
+    try:
+        results = invoice_processing_service.process_retry_queue(provider)
+        return {"retries": results, "count": len(results)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process retry queue: {str(e)}")
 
 
 async def _process_batch_async(app_state, batch_request: BatchProcessRequest):

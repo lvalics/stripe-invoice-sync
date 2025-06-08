@@ -1,0 +1,1 @@
+"""Database tests for Stripe Invoice Sync."""

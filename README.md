@@ -10,6 +10,10 @@ A modular Python API for syncing Stripe invoices and charges with multiple Roman
 - **Company Validation**: Romanian CUI validation and ANAF company lookup
 - **Batch Processing**: Efficient bulk invoice processing with rate limiting
 - **No Frontend Required**: Fully functional via API and scripts
+- **Database Persistence**: SQLite/PostgreSQL support with full audit trail
+- **Duplicate Detection**: Prevents sending the same invoice twice to providers
+- **Automatic Retry**: Failed invoices queued for retry with exponential backoff
+- **Processing History**: Complete tracking of all invoice processing attempts
 
 ## Architecture
 
@@ -51,6 +55,13 @@ cp .env.example .env
 # Edit .env with your credentials
 ```
 
+5. Initialize database:
+```bash
+# Database migrations are applied automatically on startup
+# Or run manually:
+alembic upgrade head
+```
+
 ## Configuration
 
 ### Required Environment Variables
@@ -59,6 +70,7 @@ cp .env.example .env
 - `COMPANY_NAME`: Your company name
 - `COMPANY_CUI`: Your company tax ID (CUI)
 - `COMPANY_ADDRESS_*`: Your company address details
+- `DATABASE_URL`: Database connection string (default: `sqlite:///stripe_invoice_sync.db`)
 
 ### Provider Configuration
 
@@ -200,15 +212,66 @@ When running, visit:
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
+## Database Features
+
+### Duplicate Detection
+The system automatically detects if an invoice has already been sent to a provider:
+- Checks by `stripe_id` + `provider` combination
+- Returns existing invoice status if already processed
+- Prevents duplicate submissions to external systems
+
+### Processing History
+Every invoice processing attempt is tracked:
+```bash
+# Get full history for an invoice
+curl http://localhost:8000/api/invoices/history/ch_1234567890
+
+# Get processing statistics
+curl http://localhost:8000/api/invoices/statistics
+```
+
+### Retry Queue
+Failed invoices are automatically queued for retry:
+- Exponential backoff (30min, 60min, 90min)
+- Maximum 3 retry attempts
+- Manual retry trigger available via API
+
+### Database Management
+```bash
+# View current migration status
+alembic current
+
+# Create new migration
+alembic revision --autogenerate -m "Description"
+
+# Apply migrations
+alembic upgrade head
+
+# Rollback one migration
+alembic downgrade -1
+```
+
 ## Testing
 
 ```bash
-# Run tests
+# Run all tests
 pytest
+
+# Run database tests
+pytest tests/test_db/ -v
 
 # Run with coverage
 pytest --cov=app tests/
+
+# Use the test runner for interactive testing
+python run_tests.py
 ```
+
+### Test Categories
+- **Duplicate Detection**: `tests/test_db/test_duplicate_detection.py`
+- **Retry Queue**: `tests/test_db/test_retry_queue.py`
+- **Processing History**: `tests/test_db/test_processing_history.py`
+- **API Integration**: `tests/test_db/test_database_api.py`
 
 ## Error Handling
 
