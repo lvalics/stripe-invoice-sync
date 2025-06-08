@@ -26,7 +26,8 @@ async def list_providers(request: Request):
     for name, provider in providers.items():
         # Check authentication status
         try:
-            is_authenticated = await provider.validate_credentials()
+            auth_result = await provider.validate_credentials()
+            is_authenticated = auth_result.get("valid", False)
         except:
             is_authenticated = False
         
