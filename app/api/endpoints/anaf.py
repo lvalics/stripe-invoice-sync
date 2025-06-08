@@ -20,6 +20,10 @@ class CompanyInfo(BaseModel):
     status: Optional[str]
 
 
+class CUIValidationRequest(BaseModel):
+    cui: str
+
+
 @router.get("/company/{cui}", response_model=CompanyInfo)
 async def get_company_info(request: Request, cui: str):
     """Get company information from ANAF by CUI/Tax ID"""
@@ -63,7 +67,12 @@ async def get_company_info(request: Request, cui: str):
     except Exception as e:
         # Check if it's a connection error
         error_msg = str(e).lower()
-        if "connection" in error_msg or "timeout" in error_msg:
+        if "connection interrupted" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="ANAF service temporarily unavailable - connection interrupted. Please try again."
+            )
+        elif "connection" in error_msg or "timeout" in error_msg:
             raise HTTPException(
                 status_code=503,
                 detail=f"ANAF service connection error: {str(e)}"
@@ -73,6 +82,11 @@ async def get_company_info(request: Request, cui: str):
                 status_code=400,
                 detail=str(e)
             )
+        elif "empty response" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="ANAF service returned empty response. Please try again."
+            )
         else:
             raise HTTPException(
                 status_code=500,
@@ -81,10 +95,10 @@ async def get_company_info(request: Request, cui: str):
 
 
 @router.post("/validate-cui")
-async def validate_cui(cui: str):
+async def validate_cui(request: CUIValidationRequest):
     """Validate Romanian CUI format"""
     # Remove RO prefix if present
-    cui_clean = cui.upper().replace("RO", "").strip()
+    cui_clean = request.cui.upper().replace("RO", "").strip()
     
     # Check if it's numeric
     if not cui_clean.isdigit():

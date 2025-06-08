@@ -3,6 +3,7 @@ ANAF e-Factura provider implementation
 """
 import httpx
 import logging
+import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import xml.etree.ElementTree as ET
@@ -189,117 +190,169 @@ class ANAFProvider(InvoiceProviderInterface):
         )
     
     async def get_company_info(self, tax_id: str) -> Optional[Dict[str, Any]]:
-        """Get company information from ANAF"""
+        """Get company information from ANAF with retry logic"""
         # Remove RO prefix if present
         cui = tax_id.replace("RO", "").strip()
         logger.info(f"Looking up CUI: {cui}")
         
-        try:
-            
-            # Create a fresh client for each request to avoid connection reuse issues
-            limits = httpx.Limits(
-                max_keepalive_connections=0,  # Disable connection pooling
-                max_connections=1,
-                keepalive_expiry=0
-            )
-            async with httpx.AsyncClient(
-                verify=False, 
-                limits=limits,
-                follow_redirects=True,
-                http2=False,  # Disable HTTP/2 which can cause issues
-                default_encoding='utf-8'
-            ) as client:
-                response = await client.post(
-                    f"https://webservicesp.anaf.ro/api/PlatitorTvaRest/v9/tva",
-                    json=[{
-                        "cui": int(cui),
-                        "data": datetime.now().strftime("%Y-%m-%d")
-                    }],
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        "Connection": "close",  # Force connection close
-                        "Accept-Encoding": "gzip, deflate"  # Explicit encoding
-                    },
-                    timeout=httpx.Timeout(30.0, connect=10.0, read=20.0)
+        # Retry logic for transient failures
+        max_retries = 3
+        retry_delay = 1  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # Create a fresh client for each request to avoid connection reuse issues
+                limits = httpx.Limits(
+                    max_keepalive_connections=0,  # Disable connection pooling
+                    max_connections=1,
+                    keepalive_expiry=0
                 )
-                logger.info(f"ANAF response status: {response.status_code}")
+                async with httpx.AsyncClient(
+                    verify=False, 
+                    limits=limits,
+                    follow_redirects=True,
+                    http2=False,  # Disable HTTP/2 which can cause issues
+                    default_encoding='utf-8',
+                    transport=httpx.AsyncHTTPTransport(retries=0)  # Disable automatic retries
+                ) as client:
+                    logger.debug(f"Attempt {attempt + 1}/{max_retries} for CUI {cui}")
+                    
+                    response = await client.post(
+                        f"https://webservicesp.anaf.ro/api/PlatitorTvaRest/v9/tva",
+                        json=[{
+                            "cui": int(cui),
+                            "data": datetime.now().strftime("%Y-%m-%d")
+                        }],
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                            "Connection": "close",  # Force connection close
+                            "Accept-Encoding": "gzip, deflate"  # Explicit encoding
+                        },
+                        timeout=httpx.Timeout(30.0, connect=10.0, read=20.0)
+                    )
+                    logger.info(f"ANAF response status: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        try:
+                            # Use response.json() directly which handles encoding better
+                            data = response.json()
+                            logger.info(f"ANAF response data keys: {list(data.keys()) if data else 'None'}")
+                        except json.JSONDecodeError as json_err:
+                            logger.error(f"Failed to parse ANAF JSON response: {json_err}")
+                            # Try to get response text for debugging
+                            try:
+                                text = response.text
+                                logger.debug(f"Raw response text: {text[:500] if text else 'Empty'}...")
+                            except:
+                                pass
+                            raise Exception(f"Invalid JSON response from ANAF: {str(json_err)}")
+                        except Exception as parse_err:
+                            logger.error(f"Error processing response: {parse_err}")
+                            raise
+                        
+                        # v9 API may or may not have wrapper structure
+                        if "cod" in data and "message" in data:
+                            if data.get("cod") != 200:
+                                raise Exception(f"ANAF API error: {data.get('message', 'Unknown error')}")
+                            logger.info(f"ANAF v9 response with wrapper: cod={data.get('cod')}, message={data.get('message')}")
+                        
+                        if data.get("found") and len(data.get("found", [])) > 0:
+                            company = data["found"][0]
+                            logger.info(f"Found company data keys: {list(company.keys())}")
+                            
+                            # v9 API has nested structure
+                            general_data = company.get("date_generale", {})
+                            vat_data = company.get("inregistrare_scop_Tva", {})
+                            inactive_data = company.get("stare_inactiv", {})
+                            
+                            logger.info(f"Extracted general_data: {general_data.get('denumire')}")
+                            
+                            # Extract VAT registration date from periods
+                            vat_reg_date = None
+                            if vat_data.get("perioade_TVA"):
+                                vat_reg_date = vat_data["perioade_TVA"][0].get("data_inceput_ScpTVA")
+                            
+                            result = {
+                                "cui": str(general_data.get("cui")),  # Convert int to string
+                                "name": general_data.get("denumire"),
+                                "address": general_data.get("adresa"),
+                                "registration_number": general_data.get("nrRegCom"),
+                                "phone": general_data.get("telefon"),
+                                "vat_payer": vat_data.get("scpTVA", False),
+                                "vat_registration_date": vat_reg_date,
+                                "status": "ACTIV" if not inactive_data.get("statusInactivi", False) else "INACTIV"  # Convert bool to string
+                                # Removed raw_data to avoid potential serialization issues
+                            }
+                            logger.info(f"Successfully returning company info for CUI {cui}")
+                            return result
+                        else:
+                            logger.info(f"No company found for CUI {cui}")
+                            return None
+                            
+                    elif response.status_code >= 500:
+                        # Server error, retry
+                        if attempt < max_retries - 1:
+                            logger.warning(f"ANAF service error (HTTP {response.status_code}), retrying in {retry_delay}s...")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        raise Exception(f"ANAF service error: HTTP {response.status_code}")
+                    elif response.status_code >= 400:
+                        logger.warning(f"ANAF API returned {response.status_code} for CUI {cui}")
+                        return None
                 
-                if response.status_code == 200:
-                    try:
-                        # Read content once and parse
-                        content = await response.aread()
-                        data = json.loads(content)
-                        logger.info(f"ANAF response data keys: {list(data.keys()) if data else 'None'}")
-                    except Exception as json_err:
-                        logger.error(f"Failed to parse ANAF JSON response: {json_err}")
-                        raise Exception(f"Invalid JSON response from ANAF: {str(json_err)}")
-                    finally:
-                        # Explicitly close the response
-                        await response.aclose()
+            except httpx.ReadError as e:
+                # Connection was closed while reading response
+                error_details = str(e) if str(e) else "Connection closed unexpectedly"
+                logger.error(f"ANAF read error on attempt {attempt + 1}: {error_details} - {type(e).__name__}")
+                
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying after read error, attempt {attempt + 2}/{max_retries} in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    continue
                     
-                    # v9 API may or may not have wrapper structure
-                    if "cod" in data and "message" in data:
-                        if data.get("cod") != 200:
-                            raise Exception(f"ANAF API error: {data.get('message', 'Unknown error')}")
-                        logger.info(f"ANAF v9 response with wrapper: cod={data.get('cod')}, message={data.get('message')}")
-                    
-                    if data.get("found") and len(data.get("found", [])) > 0:
-                        company = data["found"][0]
-                        logger.info(f"Found company data keys: {list(company.keys())}")
-                        
-                        # v9 API has nested structure
-                        general_data = company.get("date_generale", {})
-                        vat_data = company.get("inregistrare_scop_Tva", {})
-                        inactive_data = company.get("stare_inactiv", {})
-                        
-                        logger.info(f"Extracted general_data: {general_data.get('denumire')}")
-                        
-                        # Extract VAT registration date from periods
-                        vat_reg_date = None
-                        if vat_data.get("perioade_TVA"):
-                            vat_reg_date = vat_data["perioade_TVA"][0].get("data_inceput_ScpTVA")
-                        
-                        result = {
-                            "cui": str(general_data.get("cui")),  # Convert int to string
-                            "name": general_data.get("denumire"),
-                            "address": general_data.get("adresa"),
-                            "registration_number": general_data.get("nrRegCom"),
-                            "phone": general_data.get("telefon"),
-                            "vat_payer": vat_data.get("scpTVA", False),
-                            "vat_registration_date": vat_reg_date,
-                            "status": "ACTIV" if not inactive_data.get("statusInactivi", False) else "INACTIV"  # Convert bool to string
-                            # Removed raw_data to avoid potential serialization issues
-                        }
-                        logger.info(f"Returning company info for CUI {cui}")
-                        return result
-                elif response.status_code >= 500:
-                    raise Exception(f"ANAF service error: HTTP {response.status_code}")
-                elif response.status_code >= 400:
-                    logger.warning(f"ANAF API returned {response.status_code} for CUI {cui}")
-            
-            return None
-            
-        except httpx.ReadError as e:
-            logger.error(f"ANAF read error: {str(e)}")
-            raise Exception(f"Error reading ANAF response: {str(e)}")
-        except httpx.ConnectError as e:
-            logger.error(f"ANAF connection error: {str(e)}")
-            raise Exception(f"Cannot connect to ANAF service: {str(e)}")
-        except httpx.TimeoutException as e:
-            logger.error(f"ANAF timeout error: {str(e)}")
-            raise Exception(f"ANAF service timeout: {str(e)}")
-        except httpx.HTTPError as e:
-            error_msg = f"{type(e).__name__}: {str(e)}"
-            logger.error(f"ANAF HTTP error: {error_msg}")
-            raise Exception(f"ANAF HTTP error: {error_msg}")
-        except ValueError as e:
-            logger.error(f"Invalid CUI format: {str(e)}")
-            raise Exception(f"Invalid CUI format: {str(e)}")
-        except Exception as e:
-            logger.error(f"Failed to get company info from ANAF: {type(e).__name__}: {str(e)}")
-            raise
+                raise Exception(f"Connection interrupted while reading ANAF response after {max_retries} attempts")
+                
+            except httpx.ConnectError as e:
+                logger.error(f"ANAF connection error: {str(e)}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying after connection error, attempt {attempt + 2}/{max_retries} in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                raise Exception(f"Cannot connect to ANAF service: {str(e)}")
+                
+            except httpx.TimeoutException as e:
+                logger.error(f"ANAF timeout error: {str(e)}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying after timeout, attempt {attempt + 2}/{max_retries} in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                raise Exception(f"ANAF service timeout: {str(e)}")
+                
+            except httpx.HTTPError as e:
+                error_msg = f"{type(e).__name__}: {str(e)}"
+                logger.error(f"ANAF HTTP error: {error_msg}")
+                if attempt < max_retries - 1 and "RemoteProtocolError" in error_msg:
+                    logger.info(f"Retrying after protocol error, attempt {attempt + 2}/{max_retries} in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                raise Exception(f"ANAF HTTP error: {error_msg}")
+                
+            except ValueError as e:
+                logger.error(f"Invalid CUI format: {str(e)}")
+                raise Exception(f"Invalid CUI format: {str(e)}")
+                
+            except Exception as e:
+                logger.error(f"Failed to get company info from ANAF: {type(e).__name__}: {str(e)}")
+                if attempt < max_retries - 1 and "Empty response" in str(e):
+                    logger.info(f"Retrying after empty response, attempt {attempt + 2}/{max_retries} in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                raise
+        
+        # Should not reach here
+        raise Exception(f"Failed to get company info after {max_retries} attempts")
     
     def validate_invoice_data(self, invoice_data: InvoiceData) -> List[str]:
         """Validate invoice data for ANAF requirements"""
