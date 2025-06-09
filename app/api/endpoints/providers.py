@@ -17,6 +17,13 @@ class ProviderInfo(BaseModel):
     configuration: Dict[str, Any]
 
 
+@router.get("/names", response_model=List[str])
+async def list_provider_names(request: Request):
+    """List all provider names"""
+    providers = request.app.state.providers
+    return list(providers.keys())
+
+
 @router.get("/", response_model=List[ProviderInfo])
 async def list_providers(request: Request):
     """List all configured providers and their status"""
@@ -52,7 +59,7 @@ async def list_providers(request: Request):
     return provider_list
 
 
-@router.get("/{provider_name}/validate")
+@router.post("/{provider_name}/validate")
 async def validate_provider(request: Request, provider_name: str):
     """Validate provider credentials"""
     providers = request.app.state.providers

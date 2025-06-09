@@ -11,6 +11,7 @@ from app.config import settings
 from app.core.provider_factory import ProviderFactory
 from app.core.provider_interface import ProviderConfig
 from app.api.endpoints import stripe_router, anaf_router, invoice_router, provider_router
+from app.api.endpoints.dashboard import router as dashboard_router
 from app.services.stripe_service import StripeService, StripeConfig
 from app.db.database import init_db
 
@@ -92,6 +93,7 @@ app.include_router(stripe_router, prefix="/api/stripe", tags=["Stripe"])
 app.include_router(invoice_router, prefix="/api/invoices", tags=["Invoices"])
 app.include_router(provider_router, prefix="/api/providers", tags=["Providers"])
 app.include_router(anaf_router, prefix="/api/anaf", tags=["ANAF"])
+app.include_router(dashboard_router, prefix="/api/dashboard", tags=["Dashboard"])
 
 
 @app.get("/")
