@@ -52,6 +52,15 @@ interface StripeInvoice {
     amount: number;
   }>;
   source_type?: 'invoice' | 'charge';
+  processed?: boolean;
+  processing_status?: string;
+  provider_invoice_id?: string;
+  processed_providers?: Array<{
+    provider: string;
+    status: string;
+    provider_invoice_id: string;
+    processed_at: string;
+  }>;
 }
 
 export default function Process() {
@@ -85,6 +94,45 @@ export default function Process() {
       }
     } catch (err) {
       console.error('Failed to load providers:', err);
+    }
+  };
+
+  const checkProcessedStatus = async (invoices: StripeInvoice[]) => {
+    if (invoices.length === 0) return invoices;
+    
+    try {
+      const invoice_ids = invoices.map(inv => inv.id);
+      
+      // Get all processed info for all providers
+      const allProcessedData = await api.stripe.checkAllProcessed(invoice_ids);
+      console.log('All processed data:', allProcessedData);
+      
+      // Also check current provider specifically
+      let currentProviderData: { [key: string]: any } = {};
+      if (provider) {
+        currentProviderData = await api.stripe.checkProcessed({ 
+          invoice_ids, 
+          provider
+        });
+        console.log('Current provider data:', currentProviderData);
+      }
+      
+      return invoices.map(inv => {
+        const allProviders = allProcessedData[inv.id];
+        const currentProviderInfo = currentProviderData[inv.id];
+        
+        return {
+          ...inv,
+          processed: allProviders?.processed || false,
+          processed_providers: allProviders?.providers || [],
+          // For current provider specifically
+          processing_status: currentProviderInfo?.status,
+          provider_invoice_id: currentProviderInfo?.provider_invoice_id
+        };
+      });
+    } catch (err) {
+      console.error('Failed to check processed status:', err);
+      return invoices;
     }
   };
 
@@ -144,7 +192,11 @@ export default function Process() {
         }
       }
       
-      const combined = [...invoices, ...charges].sort((a, b) => b.created - a.created);
+      let combined = [...invoices, ...charges].sort((a, b) => b.created - a.created);
+      
+      // Check processed status
+      combined = await checkProcessedStatus(combined);
+      
       setStripeInvoices(combined);
       setSelectedInvoices(new Set());
     } catch (err: any) {
@@ -334,13 +386,28 @@ export default function Process() {
       )}
 
       {processResult && (
-        <Alert 
-          severity={processResult.failed === 0 ? 'success' : 'warning'} 
-          sx={{ mb: 2 }}
-          onClose={() => setProcessResult(null)}
-        >
-          Processed {processResult.total} invoices: {processResult.successful} successful, {processResult.failed} failed
-        </Alert>
+        <Box sx={{ mb: 2 }}>
+          <Alert 
+            severity={processResult.failed === 0 ? 'success' : 'warning'} 
+            onClose={() => setProcessResult(null)}
+          >
+            Processed {processResult.total} invoices: {processResult.successful} successful, {processResult.failed} failed
+          </Alert>
+          {processResult.details && processResult.details.some((d: any) => !d.success) && (
+            <Paper sx={{ mt: 1, p: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Failed Invoices:</Typography>
+              {processResult.details
+                .filter((d: any) => !d.success)
+                .map((detail: any) => (
+                  <Box key={detail.invoice_id} sx={{ mb: 1 }}>
+                    <Typography variant="body2" color="error">
+                      {detail.invoice_id}: {detail.error}
+                    </Typography>
+                  </Box>
+                ))}
+            </Paper>
+          )}
+        </Box>
       )}
 
       {loading ? (
@@ -359,7 +426,15 @@ export default function Process() {
                 <Select
                   value={provider}
                   label="Provider"
-                  onChange={(e) => setProvider(e.target.value)}
+                  onChange={async (e) => {
+                    const newProvider = e.target.value;
+                    setProvider(newProvider);
+                    // Re-check processed status
+                    if (stripeInvoices.length > 0) {
+                      const updated = await checkProcessedStatus(stripeInvoices);
+                      setStripeInvoices(updated);
+                    }
+                  }}
                 >
                   {providers.map((p) => (
                     <MenuItem key={p} value={p}>
@@ -406,6 +481,11 @@ export default function Process() {
                     key={invoice.id}
                     hover
                     selected={selectedInvoices.has(invoice.id)}
+                    sx={{
+                      backgroundColor: invoice.processed 
+                        ? 'rgba(76, 175, 80, 0.1)' 
+                        : 'inherit'
+                    }}
                   >
                     <TableCell padding="checkbox">
                       <Checkbox
@@ -421,7 +501,26 @@ export default function Process() {
                       />
                     </TableCell>
                     <TableCell>
-                      <Typography variant="body2">{invoice.number || invoice.id}</Typography>
+                      <Box>
+                        <Typography variant="body2">{invoice.number || invoice.id}</Typography>
+                        {invoice.processed_providers && invoice.processed_providers.length > 0 && (
+                          <Box display="flex" gap={0.5} mt={0.5} flexWrap="wrap">
+                            {invoice.processed_providers.map((prov) => (
+                              <Tooltip 
+                                key={prov.provider}
+                                title={`${prov.provider.toUpperCase()}: ${prov.status} (ID: ${prov.provider_invoice_id})`}
+                              >
+                                <Chip
+                                  size="small"
+                                  label={prov.provider.toUpperCase()}
+                                  color={prov.status === 'completed' ? 'success' : 'error'}
+                                  sx={{ height: 20, fontSize: '0.7rem' }}
+                                />
+                              </Tooltip>
+                            ))}
+                          </Box>
+                        )}
+                      </Box>
                     </TableCell>
                     <TableCell>
                       <Box>

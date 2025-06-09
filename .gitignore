@@ -2,7 +2,10 @@ venv/*
 .env
 __pycache__/*
 *.pyc
+temp_auto_push.bat
 *.pyo
 *.pyd
 processed_payments.json
 *.log
+.gitignore
+branch_structure.json

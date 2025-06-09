@@ -8,9 +8,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.crud import InvoiceCRUD
-from app.db.models import ProcessingStatus, InvoiceType
+from app.db.models import ProcessingStatus, InvoiceType, ProcessedInvoice
+import logging
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
@@ -283,6 +286,10 @@ class ProcessInvoicesRequest(BaseModel):
     provider: str
 
 
+class CheckProcessedRequest(BaseModel):
+    invoice_ids: List[str]
+
+
 @router.post("/process-invoices")
 async def process_invoices(
     request: Request,
@@ -312,65 +319,157 @@ async def process_invoices(
                 invoice = await stripe_service.get_invoice_by_id(invoice_id)
                 
                 # Convert to our internal format
-                from app.models import InvoiceData, CustomerData, AddressData, ItemData
+                from app.core.provider_interface import InvoiceData
                 
                 # Extract customer data
-                customer_obj = invoice.get("customer_object", {})
-                customer_id = invoice.get("customer")
-                if isinstance(customer_id, dict):
-                    customer_id = customer_id.get("id", "")
-                    
-                customer_data = CustomerData(
-                    stripe_customer_id=customer_id,
-                    name=customer_obj.get("name", "Unknown Customer"),
-                    email=customer_obj.get("email", ""),
-                    tax_id=customer_obj.get("tax_ids", {}).get("data", [{}])[0].get("value", "") if customer_obj.get("tax_ids", {}).get("data") else "",
-                    address=AddressData(
-                        line1=customer_obj.get("address", {}).get("line1", ""),
-                        line2=customer_obj.get("address", {}).get("line2", ""),
-                        city=customer_obj.get("address", {}).get("city", ""),
-                        state=customer_obj.get("address", {}).get("state", ""),
-                        postal_code=customer_obj.get("address", {}).get("postal_code", ""),
-                        country=customer_obj.get("address", {}).get("country", "RO")
-                    )
-                )
+                # When we expand customer in get_invoice_by_id, it returns the full customer object
+                customer = invoice.get("customer")
+                if isinstance(customer, dict):
+                    customer_obj = customer
+                    customer_id = customer.get("id", "")
+                    logger.debug(f"Invoice {invoice_id}: Customer expanded - email: {customer_obj.get('email')}, name: {customer_obj.get('name')}")
+                else:
+                    # If customer is just a string ID, we don't have the full object
+                    customer_obj = {}
+                    customer_id = customer if customer else ""
+                    logger.warning(f"Invoice {invoice_id}: Customer not expanded, only ID available: {customer_id}")
+                
+                # Extract customer tax ID
+                customer_tax_id = ""
+                if customer_obj.get("tax_ids", {}).get("data"):
+                    customer_tax_id = customer_obj["tax_ids"]["data"][0].get("value", "")
+                
+                # Extract customer address
+                customer_address = None
+                if customer_obj.get("address"):
+                    customer_address = {
+                        "line1": customer_obj["address"].get("line1", ""),
+                        "line2": customer_obj["address"].get("line2", ""),
+                        "city": customer_obj["address"].get("city", ""),
+                        "state": customer_obj["address"].get("state", ""),
+                        "postal_code": customer_obj["address"].get("postal_code", ""),
+                        "country": customer_obj["address"].get("country", "RO")
+                    }
                 
                 # Extract line items
-                items = []
+                lines = []
                 for line in invoice.get("lines", {}).get("data", []):
-                    items.append(ItemData(
-                        description=line.get("description", "Service"),
-                        quantity=line.get("quantity", 1),
-                        unit_price=line.get("price", {}).get("unit_amount", 0) / 100.0,
-                        total_price=line.get("amount", 0) / 100.0,
-                        currency=line.get("currency", "EUR").upper()
-                    ))
+                    # Get the price - it might be in different formats
+                    unit_price = 0.0
+                    if isinstance(line.get("price"), dict):
+                        unit_price = line["price"].get("unit_amount", 0) / 100.0
+                    elif line.get("unit_amount"):
+                        unit_price = line.get("unit_amount", 0) / 100.0
+                    elif line.get("amount"):
+                        # If no unit price, calculate from total amount and quantity
+                        quantity = line.get("quantity", 1)
+                        unit_price = (line.get("amount", 0) / 100.0) / quantity if quantity > 0 else 0.0
+                    
+                    total_price = line.get("amount", 0) / 100.0
+                    
+                    # Adjust prices based on VAT inclusion
+                    if settings.stripe_prices_include_tax:
+                        # Extract VAT from the prices
+                        unit_price = unit_price / (1 + settings.default_tax_rate / 100)
+                        total_price = total_price / (1 + settings.default_tax_rate / 100)
+                    
+                    lines.append({
+                        "description": line.get("description", "Service"),
+                        "quantity": line.get("quantity", 1),
+                        "unit_price": unit_price,
+                        "total_price": total_price,
+                        "currency": line.get("currency", "EUR").upper(),
+                        "tax_rate": settings.default_tax_rate
+                    })
+                
+                # Calculate totals
+                amount_paid = invoice.get("amount_paid", 0) / 100.0
+                amount_total = invoice.get("total", 0) / 100.0
+                
+                # Handle VAT calculation based on whether Stripe prices include tax
+                if settings.stripe_prices_include_tax:
+                    # Prices include tax - need to extract the base amount
+                    subtotal = amount_total / (1 + settings.default_tax_rate / 100)
+                    tax_amount = amount_total - subtotal
+                else:
+                    # Prices don't include tax - need to add tax
+                    subtotal = amount_total
+                    tax_amount = subtotal * (settings.default_tax_rate / 100)
+                    amount_total = subtotal + tax_amount
                 
                 invoice_data = InvoiceData(
-                    stripe_invoice_id=invoice["id"],
+                    source_type="stripe_invoice",
+                    source_id=invoice["id"],
+                    source_data=invoice,
                     invoice_number=invoice.get("number"),
-                    amount=invoice.get("amount_paid", 0) / 100.0,
-                    currency=invoice.get("currency", "EUR").upper(),
-                    customer=customer_data,
-                    items=items,
                     invoice_date=datetime.fromtimestamp(invoice["created"]),
                     due_date=datetime.fromtimestamp(invoice.get("due_date", invoice["created"])),
+                    currency=invoice.get("currency", "EUR").upper(),
+                    customer_id=customer_id,
+                    customer_name=customer_obj.get("name", "Unknown Customer"),
+                    customer_email=customer_obj.get("email", ""),
+                    customer_tax_id=customer_tax_id,
+                    customer_address=customer_address,
+                    customer_country=customer_address.get("country", "RO") if customer_address else "RO",
+                    supplier_name=settings.company_name,
+                    supplier_tax_id=settings.company_cui,
+                    supplier_address={
+                        "street": settings.company_address_street,
+                        "city": settings.company_address_city,
+                        "county": settings.company_address_county,
+                        "postal_code": settings.company_address_postal,
+                        "country": settings.company_address_country
+                    },
+                    supplier_registration=settings.company_registration,
+                    lines=lines,
+                    subtotal=subtotal,
+                    tax_amount=tax_amount,
+                    total=amount_total,
+                    amount_paid=amount_paid,
+                    tax_rate=settings.default_tax_rate,
+                    tax_breakdown=[{
+                        "rate": settings.default_tax_rate,
+                        "base": subtotal,
+                        "amount": tax_amount
+                    }],
                     metadata=invoice.get("metadata", {})
                 )
                 
-                # Create invoice record
-                db_invoice = InvoiceCRUD.create_invoice(
+                # Check if invoice already processed with this provider
+                existing_invoice = InvoiceCRUD.check_duplicate(
                     db=db,
-                    stripe_id=invoice_data.stripe_invoice_id,
-                    invoice_type=InvoiceType.STRIPE_INVOICE,
-                    provider=data.provider,
-                    customer_id=customer_data.stripe_customer_id,
-                    customer_email=customer_data.email,
-                    customer_tax_id=customer_data.tax_id,
-                    amount=invoice_data.amount,
-                    currency=invoice_data.currency,
-                    invoice_date=invoice_data.invoice_date
+                    stripe_id=invoice_data.source_id,
+                    provider=data.provider
                 )
+                
+                if existing_invoice:
+                    if existing_invoice.status == ProcessingStatus.COMPLETED:
+                        results["details"].append({
+                            "invoice_id": invoice_id,
+                            "success": True,
+                            "provider_invoice_id": existing_invoice.provider_invoice_id,
+                            "error": None,
+                            "message": "Invoice already processed"
+                        })
+                        results["successful"] += 1
+                        continue
+                    else:
+                        # Update existing record
+                        db_invoice = existing_invoice
+                else:
+                    # Create new invoice record
+                    db_invoice = InvoiceCRUD.create_invoice(
+                        db=db,
+                        stripe_id=invoice_data.source_id,
+                        invoice_type=InvoiceType.STRIPE_INVOICE,
+                        provider=data.provider,
+                        customer_id=invoice_data.customer_id,
+                        customer_email=invoice_data.customer_email,
+                        customer_tax_id=invoice_data.customer_tax_id,
+                        amount=invoice_data.amount_paid,
+                        currency=invoice_data.currency,
+                        invoice_date=invoice_data.invoice_date
+                    )
                 
                 # Process through provider
                 result = await provider.create_invoice(invoice_data)
@@ -381,25 +480,29 @@ async def process_invoices(
                         db=db,
                         invoice_id=db_invoice.id,
                         status=ProcessingStatus.COMPLETED,
-                        provider_invoice_id=result.provider_invoice_id
+                        provider_invoice_id=result.external_id
                     )
                 else:
                     results["failed"] += 1
+                    error_msg = result.errors[0] if result.errors else "Unknown error"
                     InvoiceCRUD.update_status(
                         db=db,
                         invoice_id=db_invoice.id,
                         status=ProcessingStatus.FAILED,
-                        error_message=result.error
+                        error_message=error_msg
                     )
                 
                 results["details"].append({
                     "invoice_id": invoice_id,
                     "success": result.success,
-                    "provider_invoice_id": result.provider_invoice_id,
-                    "error": result.error
+                    "provider_invoice_id": result.external_id,
+                    "error": result.errors[0] if result.errors else None
                 })
                 
             except Exception as e:
+                import traceback
+                logger.error(f"Error processing invoice {invoice_id}: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 results["failed"] += 1
                 results["details"].append({
                     "invoice_id": invoice_id,
@@ -411,3 +514,89 @@ async def process_invoices(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process invoices: {str(e)}")
+
+
+@router.post("/check-processed")
+async def check_processed_invoices(
+    data: ProcessInvoicesRequest,
+    db: Session = Depends(get_db)
+):
+    """Check which invoices have already been processed with a specific provider"""
+    processed = {}
+    
+    logger.debug(f"Checking processed status for {len(data.invoice_ids)} invoices with provider {data.provider}")
+    
+    for invoice_id in data.invoice_ids:
+        existing = InvoiceCRUD.check_duplicate(
+            db=db,
+            stripe_id=invoice_id,
+            provider=data.provider
+        )
+        if existing:
+            logger.debug(f"Invoice {invoice_id} found: status={existing.status}, provider_id={existing.provider_invoice_id}")
+            processed[invoice_id] = {
+                "processed": True,
+                "status": existing.status,
+                "provider_invoice_id": existing.provider_invoice_id,
+                "processed_at": existing.processed_at.isoformat() if existing.processed_at else None,
+                "provider": existing.provider
+            }
+        else:
+            processed[invoice_id] = {
+                "processed": False,
+                "status": None,
+                "provider_invoice_id": None,
+                "processed_at": None,
+                "provider": None
+            }
+    
+    return processed
+
+
+@router.post("/check-all-processed")
+async def check_all_processed_invoices(
+    data: CheckProcessedRequest,
+    db: Session = Depends(get_db)
+):
+    """Check which invoices have been processed by ANY provider"""
+    from sqlalchemy import or_
+    
+    processed = {}
+    
+    logger.info(f"Checking all processed status for {len(data.invoice_ids)} invoices")
+    
+    # Get all processed invoices for these IDs
+    all_processed = db.query(ProcessedInvoice).filter(
+        ProcessedInvoice.stripe_id.in_(data.invoice_ids)
+    ).all()
+    
+    logger.info(f"Found {len(all_processed)} processed records")
+    for p in all_processed:
+        logger.info(f"  - {p.stripe_id}: {p.provider} - {p.status}")
+    
+    # Group by invoice ID
+    for invoice_id in data.invoice_ids:
+        invoice_providers = [p for p in all_processed if p.stripe_id == invoice_id]
+        
+        if invoice_providers:
+            # Get all providers that processed this invoice
+            providers_info = []
+            for p in invoice_providers:
+                providers_info.append({
+                    "provider": p.provider,
+                    "status": p.status,
+                    "provider_invoice_id": p.provider_invoice_id,
+                    "processed_at": p.processed_at.isoformat() if p.processed_at else None
+                })
+            
+            processed[invoice_id] = {
+                "processed": True,
+                "providers": providers_info
+            }
+        else:
+            processed[invoice_id] = {
+                "processed": False,
+                "providers": []
+            }
+    
+    return processed

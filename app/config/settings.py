@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     default_tax_rate: float = Field(19.0, env="DEFAULT_TAX_RATE")
     default_currency: str = Field("RON", env="DEFAULT_CURRENCY")
     default_payment_days: int = Field(30, env="DEFAULT_PAYMENT_DAYS")
+    stripe_prices_include_tax: bool = Field(True, env="STRIPE_PRICES_INCLUDE_TAX")
     
     # Provider Configurations
     # ANAF
