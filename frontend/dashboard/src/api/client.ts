@@ -63,6 +63,36 @@ export interface DashboardStats {
 }
 
 export const api = {
+  stripe: {
+    getInvoices: async (params?: {
+      start_date?: string;
+      end_date?: string;
+      customer_id?: string;
+      status?: string;
+    }) => {
+      const response = await apiClient.get('/api/stripe/invoices', { params });
+      return response.data;
+    },
+    
+    getCharges: async (params?: {
+      start_date?: string;
+      end_date?: string;
+      customer_id?: string;
+      status?: string;
+    }) => {
+      const response = await apiClient.get('/api/stripe/charges', { params });
+      return response.data;
+    },
+    
+    processInvoices: async (data: {
+      invoice_ids: string[];
+      provider: string;
+    }) => {
+      const response = await apiClient.post('/api/stripe/process-invoices', data);
+      return response.data;
+    }
+  },
+  
   invoices: {
     getAll: async (params?: { 
       provider?: string; 

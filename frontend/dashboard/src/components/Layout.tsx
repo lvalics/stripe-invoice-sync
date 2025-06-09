@@ -21,6 +21,7 @@ import {
   Receipt as ReceiptIcon,
   Replay as ReplayIcon,
   Extension as ExtensionIcon,
+  PlayArrow as ProcessIcon,
 } from '@mui/icons-material';
 
 const drawerWidth = 240;
@@ -39,6 +40,7 @@ export default function Layout({ children }: LayoutProps) {
 
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/dashboard' },
+    { text: 'Process', icon: <ProcessIcon />, path: '/process' },
     { text: 'Invoices', icon: <ReceiptIcon />, path: '/invoices' },
     { text: 'Retry Queue', icon: <ReplayIcon />, path: '/retry-queue' },
     { text: 'Providers', icon: <ExtensionIcon />, path: '/providers' },
