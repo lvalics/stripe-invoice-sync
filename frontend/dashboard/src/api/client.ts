@@ -90,6 +90,19 @@ export const api = {
     }) => {
       const response = await apiClient.post('/api/stripe/process-invoices', data);
       return response.data;
+    },
+    
+    checkProcessed: async (data: {
+      invoice_ids: string[];
+      provider: string;
+    }) => {
+      const response = await apiClient.post('/api/stripe/check-processed', data);
+      return response.data;
+    },
+    
+    checkAllProcessed: async (invoice_ids: string[]) => {
+      const response = await apiClient.post('/api/stripe/check-all-processed', { invoice_ids });
+      return response.data;
     }
   },
   

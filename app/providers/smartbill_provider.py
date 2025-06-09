@@ -4,7 +4,7 @@ SmartBill provider implementation
 import httpx
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import base64
 
 from app.core.provider_interface import (
@@ -36,6 +36,8 @@ class SmartBillProvider(InvoiceProviderInterface):
     async def validate_credentials(self) -> Dict[str, Any]:
         """Validate SmartBill credentials"""
         try:
+            logger.error(f"Validating SmartBill credentials for CIF: {self.company_cif}")
+            
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{self.base_url}/company/info",
@@ -45,6 +47,8 @@ class SmartBillProvider(InvoiceProviderInterface):
                     },
                     params={"cif": self.company_cif}
                 )
+                
+                logger.error(f"SmartBill validation response: {response.status_code}")
                 
                 if response.status_code == 200:
                     return {
@@ -80,7 +84,8 @@ class SmartBillProvider(InvoiceProviderInterface):
             # Transform to SmartBill format
             smartbill_data = self.transform_to_provider_format(invoice_data)
             
-            # Create invoice
+            logger.error(f"SmartBill payload: {smartbill_data}")
+            
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.base_url}/invoice",
@@ -89,9 +94,11 @@ class SmartBillProvider(InvoiceProviderInterface):
                         "Authorization": self.auth_header,
                         "Content-Type": "application/json",
                         "Accept": "application/json"
-                    },
-                    params={"cif": self.company_cif}
+                    }
                 )
+                
+                logger.error(f"SmartBill response status: {response.status_code}")
+                logger.error(f"SmartBill response: {response.text}")
                 
                 if response.status_code in [200, 201]:
                     result = response.json()
@@ -105,12 +112,28 @@ class SmartBillProvider(InvoiceProviderInterface):
                         data=result
                     )
                 else:
-                    error_data = response.json()
+                    try:
+                        error_data = response.json()
+                        error_msg = error_data.get("message", f"Failed to create invoice (status {response.status_code})")
+                    except:
+                        # Check for common HTTP status codes
+                        if response.status_code == 500:
+                            error_msg = "SmartBill server error. Please check invoice data (price cannot be 0) and try again."
+                        elif response.status_code == 401:
+                            error_msg = "SmartBill authentication failed. Please check credentials."
+                        elif response.status_code == 400:
+                            error_msg = "Invalid invoice data sent to SmartBill."
+                        else:
+                            error_msg = f"SmartBill API error (status {response.status_code})"
+                        error_data = {"status_code": response.status_code}
+                    
+                    logger.error(f"SmartBill error: {error_msg}")
+                    
                     return ProviderResponse(
                         success=False,
                         provider=self.name,
                         status=InvoiceStatus.ERROR,
-                        errors=[error_data.get("message", "Failed to create invoice")],
+                        errors=[error_msg],
                         data=error_data
                     )
                     
@@ -250,57 +273,68 @@ class SmartBillProvider(InvoiceProviderInterface):
         # Transform lines
         products = []
         for line in invoice_data.lines:
-            products.append({
-                "name": line["description"],
-                "code": line.get("code", ""),
-                "isDiscount": False,
+            # Determine tax name based on percentage
+            tax_percentage = line.get("tax_rate", 19)
+            if tax_percentage == 0:
+                tax_name = "Scutit"
+            elif tax_percentage in [5, 9]:
+                tax_name = "Redusa"
+            else:
+                tax_name = "Normala"
+            
+            # Ensure price is never 0
+            unit_price = line["unit_price"]
+            if unit_price <= 0:
+                logger.warning(f"Zero or negative price detected for line: {line['description']}")
+                unit_price = 0.01  # Set minimal price to avoid 500 error
+            
+            product_data = {
+                "name": line["description"][:200],  # Limit to 200 chars
+                "quantity": float(line["quantity"]),
+                "price": float(unit_price),
                 "measuringUnitName": line.get("unit", "buc"),
-                "currency": invoice_data.currency,
-                "quantity": line["quantity"],
-                "price": line["unit_price"],
-                "isTaxIncluded": False,
-                "taxName": f"TVA {int(line.get('tax_rate', 19))}%",
-                "taxPercentage": line.get("tax_rate", 19),
+                "taxName": tax_name,
+                "taxPercentage": float(tax_percentage),
                 "isService": True,
-                "saveToDb": False
-            })
+                "isTaxIncluded": False
+            }
+            
+            # Don't include fields that might cause issues
+            # No: code, description, discount, discountType, saveToDb, warehouseName
+            
+            products.append(product_data)
         
         # Build SmartBill invoice object
-        return {
+        smartbill_data = {
             "companyVatCode": self.company_cif,
             "client": {
-                "name": invoice_data.customer_name,
-                "vatCode": invoice_data.customer_tax_id or "",
+                "name": invoice_data.customer_name[:200],  # Limit to 200 chars
+                "vatCode": invoice_data.customer_tax_id or "-",
                 "email": invoice_data.customer_email,
-                "address": self._format_address(invoice_data.customer_address),
+                "address": self._format_address(invoice_data.customer_address) or "N/A",
                 "isTaxPayer": bool(invoice_data.customer_tax_id and invoice_data.customer_tax_id != "-"),
-                "city": invoice_data.customer_address.get("city", "") if invoice_data.customer_address else "",
-                "country": invoice_data.customer_country,
-                "saveToDb": True
+                "city": invoice_data.customer_address.get("city", "București") if invoice_data.customer_address else "București",
+                "country": invoice_data.customer_country or "Romania"
+                # No saveToDb field - it causes 500 errors
             },
             "issueDate": invoice_data.invoice_date.strftime("%Y-%m-%d"),
             "seriesName": self.config.options.get("invoice_series", "FACT"),
-            "currency": invoice_data.currency,
-            "exchangeRate": self.config.options.get("exchange_rate", 1),
-            "paymentSeries": "",
-            "language": "RO",
-            "precision": 2,
-            "issueInvoiceOrReceipt": "invoice",
-            "usePaymentTax": False,
-            "products": products,
-            "payment": {
-                "type": "Ordin de plata",
-                "isCash": False,
-                "value": invoice_data.amount_paid
-            },
-            "useEstimateDetails": False,
-            "observations": f"Stripe ID: {invoice_data.source_id}",
-            "internalNotes": f"Source: {invoice_data.source_type}",
-            "showPaymentTax": False,
-            "daysUntilDue": due_days,
             "isDraft": False,
-            "sendEmail": self.config.options.get("send_email", True)
+            "dueDate": invoice_data.due_date.strftime("%Y-%m-%d") if invoice_data.due_date else (invoice_data.invoice_date + timedelta(days=due_days)).strftime("%Y-%m-%d"),
+            "deliveryDate": invoice_data.invoice_date.strftime("%Y-%m-%d"),
+            "currency": invoice_data.currency,
+            "exchangeRate": float(self.config.options.get("exchange_rate", 1.0)),
+            "language": "RO",
+            "products": products,
+            "observations": f"Stripe ID: {invoice_data.source_id}"
         }
+        
+        # Don't include problematic fields that cause 500 errors:
+        # No: precision, useStock, payment, paymentSeries, issueInvoiceOrReceipt,
+        #     usePaymentTax, useEstimateDetails, internalNotes, showPaymentTax,
+        #     daysUntilDue, sendEmail
+        
+        return smartbill_data
     
     def validate_invoice_data(self, invoice_data: InvoiceData) -> List[str]:
         """Validate invoice data for SmartBill requirements"""
